@@ -1,0 +1,131 @@
+---
+title: "Human Activity Recognition"
+author: "Marija Grjazniha"
+date: "March 13, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+## Background
+
+Many wearable devices allow to collect a large amount of data about personal activity which helps to quantify how much of a particular activity people do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants who were asked to perform barbell lifts correctly and incorrectly in 5 different ways — 1 correct (A) and 4 with common mistakes (B-E): 
+
+* `Class A` exactly according to the specification,  
+* `Class B` throwing the elbows to the front, 
+* `Class C` lifting the dumbbell only halfway,
+* `Class D` lowering the dumbbell only halfway,
+* `Class E` throwing the hips to the front.
+
+The project is based on the Weight Lifting Exercises (WLE) dataset from Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har 
+
+```{r load, cache=TRUE}
+#setwd("R/har project")
+if (!file.exists("pml-training.csv")) {
+    fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(fileURL, destfile = "pml-training.csv", method = "curl")
+}
+if (!file.exists("pml-testing.csv")) {
+    fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(fileURL, destfile = "pml-testing.csv", method = "curl")
+}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+```
+
+## Data review
+
+Data is collected from four sensors located on the *belt*, *arm*, *forearm* and *dumbbell*.  
+Each of four sensors provides
+
+* metrics on the Euler angles: *roll* (heading), *pitch* (elevation) and *yaw* (bank):
+  - mean
+  - variance
+  - standard deviation
+  - max
+  - min
+  - amplitude
+  - kurtosis
+  - skewness,
+* *accelerometer*, *gyroscope* and *magnetometer* readings:
+  - X
+  - Y
+  - Z
+
+That results in 
+
+* 12 [angle]\_[location] variables (e.g., `pitch_dumbbell`, `yaw_belt`)
+* 96 [metric]\_[angle]\_[location] variables (e.g., `kurtosis_yaw_arm`, `stddev_roll_belt`)
+* 36 [device]\_[location]\_[axis] variables (e.g., `accel_dumbbell_x`, `gyros_forearm_z`)
+* 8 variables total\_accel\_[location] and var\_total\_accel\_[location] (e.g., `total_accel_belt`, `var_total_accel_belt`)
+* 8 other variables including class varible `classe`, name of participants, timestamps and information on windowing.
+
+
+### Missing values
+
+```{r missing}
+# Count null values by columns
+missing <- round(colMeans(is.na(training) | training==''),3)
+length(missing[missing==0])
+```
+
+Out of 160 columns, only 60 don't have missing values. Columns with missing values miss 97.9% of data, so data can't be accurately imputed and, therefore, are excluded from the analysis.
+
+Columns `X`, `user_name`, `raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`, `new_window`, `num_window` are also droped, leaving 52 explanatory variables and 1 dependent variable `classe`.
+
+```{r}
+training <- training[,names(tail(missing[missing==0],-7))]
+training$classe <- factor(training$classe)
+testing <- testing[,names(tail(missing[missing==0],-7))[-53]]
+```
+
+
+## Model training
+
+I choose Random Forest because it is known for its flexibility and great performance, and doesn't require data normalization and removal of outliers.
+
+Having limited computation capacity, I reduce the size of the forest from default 500 to 300 trees and set cross-validation number of folds to 5 (although 10 would be better). I use grid search to find the best number of variables sampled as candidates at each decision tree split `mtry`: three options around default 7 (6,7,8), which is an approximation for a square root on number of variables (52).
+
+I split a dataset into train (90%) and test (10%) to validate how the model performs on previously unseen data.
+
+
+```{r}
+library(caret)
+library(randomForest)
+set.seed(404)
+split <- createDataPartition(y=training$classe, p=0.9, list=FALSE)
+train <- training[split,]
+test <- training[-split,]
+```
+
+
+```{r, cache=TRUE}
+fit <- train(classe~., data=train, method='rf', metric="Accuracy", 
+             trControl=trainControl(method="repeatedcv", number=5, repeats=3, search="grid"), 
+             tuneGrid=expand.grid(.mtry=c(6,7,8)), ntree=300)
+fit
+fit$finalModel
+
+```
+
+Results are extremely accurate for all `mtry` values and if the model doesn't perform well on the test data, then it is clearly overfitting. Let's see.
+
+```{r}
+confusionMatrix(predict(fit, newdata=test), test$classe)
+```
+
+The model is as accurate with the new data (99.69% accuracy) as with the training data (99.54%).  
+The reson for great performance could be:
+
+- Variables explain the differnce between classes well
+- Great amount of observations (over 17k) is sufficient to train the model well.
+
+Therefore, I feel confident to predict classes on unlabeled data.
+
+```{r}
+write.csv(predict(fit, newdata=testing), file='prediction.csv')
+```
